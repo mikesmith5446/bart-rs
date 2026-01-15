@@ -14,9 +14,10 @@ from scipy.interpolate import griddata
 from scipy.signal import savgol_filter
 from scipy.stats import norm
 try:
-    import pymc_bart_rs
+    #from pymc_bart_rs import pymc_bart_rs as rs
+    import pymc_bart_rs.pymc_bart_rs as rs
 except Exception:  # pragma: no cover
-    pymc_bart_rs = None
+    rs = None
 
 TensorLike = Union[npt.NDArray[np.float64], pt.TensorVariable]
 
@@ -42,7 +43,7 @@ def _sample_posterior(
     # We detect the Rust handle by presence of attribute `.state` or `.draws` is tricky,
     # but simplest is: if pymc_bart_rs is available and `all_trees` is not a list,
     # try calling the Rust function and fall back if it errors.
-    if pymc_bart_rs is not None and not isinstance(all_trees, list):
+    if rs is not None and not isinstance(all_trees, list):
         # Convert `size` to Rust-friendly Option[List[int]]
         if size is None:
             size_arg = None
@@ -57,7 +58,7 @@ def _sample_posterior(
 
         try:
             # Rust returns shape (*size_iter, n_obs, shape)
-            return pymc_bart_rs.sample_posterior(
+            return rs.sample_posterior(
                 all_trees,  # actually wrapper/handle
                 X,
                 size_arg,
@@ -65,9 +66,8 @@ def _sample_posterior(
                 shape,
                 seed,
             )
-        except Exception:
-            # fall back to legacy behavior if Rust path not supported
-            pass
+        except Exception as e:
+            raise RuntimeError(f"Rust sample_posterior failed: {e}") from e
 
     # --- LEGACY PYTHON PATH (unchanged) ---
     stacked_trees = all_trees
@@ -82,7 +82,13 @@ def _sample_posterior(
     flatten_size = 1
     for s in size_iter:
         flatten_size *= s
-
+    
+    if isinstance(stacked_trees, list) and len(stacked_trees) == 0:
+        raise ValueError(
+            "No posterior trees available. If using Rust backend, ensure bartrv.owner.op._rust_state "
+            "is set and utils.py prefers it. Otherwise, ensure all_trees is being populated."
+        )
+    
     idx = rng.integers(0, len(stacked_trees), size=flatten_size)
 
     trees_shape = len(stacked_trees[0])

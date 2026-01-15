@@ -27,7 +27,7 @@ from pytensor.graph.basic import Variable
 from pymc_bart_rs.bart import BARTRV
 from pymc_bart_rs.compile_pymc import CompiledPyMCModel
 from pymc_bart_rs.pymc_bart_rs import initialize, step
-from pymc_bart_rs.tree_dump import TreeDump
+#from pymc_bart_rs.tree_dump import TreeDump
 
 
 class PGBART(ArrayStepShared):
@@ -148,16 +148,18 @@ class PGBART(ArrayStepShared):
         super().__init__(vars, self.compiled_pymc_model.shared)
 
     def astep(self, _):
+        #print("PGBART.astep tune =", self.tune)
         # Record time to quantify performance improvements
         t0 = perf_counter()
         self.compiled_pymc_model.update_shared_arrays()
         
-        sum_trees, variable_inclusion, _tree_dumps = step(self.state, self.tune)
-
+        sum_trees, variable_inclusion, _ = step(self.state, self.tune)
+        #print("after step; tune =", self.tune, "has _rust_state?", hasattr(self.bart, "_rust_state"))
         if not self.tune:
             # Keep posterior draws and sampling in Rust.
             # Store the Rust handle so utils._sample_posterior can call into Rust.
             self.bart._rust_state = self.state
+        
         t1 = perf_counter()
 
         stats = {
