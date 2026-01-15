@@ -13,10 +13,12 @@ from pytensor.tensor.variable import Variable
 from scipy.interpolate import griddata
 from scipy.signal import savgol_filter
 from scipy.stats import norm
-
+try:
+    import pymc_bart_rs
+except Exception:  # pragma: no cover
+    pymc_bart_rs = None
 
 TensorLike = Union[npt.NDArray[np.float64], pt.TensorVariable]
-
 
 def _sample_posterior(
     all_trees,
@@ -29,25 +31,46 @@ def _sample_posterior(
     """
     Generate samples from the BART-posterior.
 
-    Parameters
-    ----------
-    all_trees : list
-        List of all trees sampled from a posterior
-    X : tensor-like
-        A covariate matrix. Use the same used to fit BART for in-sample predictions or a new one for
-        out-of-sample predictions.
-    rng : NumPy RandomGenerator
-    size : int or tuple
-        Number of samples.
-    excluded : Optional[npt.NDArray[np.int_]]
-        Indexes of the variables to exclude when computing predictions
+    all_trees can be either:
+      1) legacy Python structure: list[draw][odim][tree], OR
+      2) Rust-backed StateWrapper handle (smart_sampler architecture)
     """
-    # Contract: all_trees is a list of draws; each draw is a list of output dims;
-    # each output-dim entry is a list of tree-like objects with predict() and dump fields.
-    stacked_trees = all_trees
-
     if isinstance(X, Variable):
         X = X.eval()
+
+    # --- NEW FAST PATH: Rust handle ---
+    # We detect the Rust handle by presence of attribute `.state` or `.draws` is tricky,
+    # but simplest is: if pymc_bart_rs is available and `all_trees` is not a list,
+    # try calling the Rust function and fall back if it errors.
+    if pymc_bart_rs is not None and not isinstance(all_trees, list):
+        # Convert `size` to Rust-friendly Option[List[int]]
+        if size is None:
+            size_arg = None
+        elif isinstance(size, int):
+            size_arg = [size]
+        else:
+            size_arg = list(size)
+
+        # Make a reproducible seed from numpy Generator for Rust
+        # (We just draw a uint64; this preserves determinism across calls given rng state.)
+        seed = int(rng.integers(0, np.iinfo(np.uint64).max, dtype=np.uint64))
+
+        try:
+            # Rust returns shape (*size_iter, n_obs, shape)
+            return pymc_bart_rs.sample_posterior(
+                all_trees,  # actually wrapper/handle
+                X,
+                size_arg,
+                excluded,
+                shape,
+                seed,
+            )
+        except Exception:
+            # fall back to legacy behavior if Rust path not supported
+            pass
+
+    # --- LEGACY PYTHON PATH (unchanged) ---
+    stacked_trees = all_trees
 
     if size is None:
         size_iter: Union[list, tuple] = (1,)
@@ -230,7 +253,8 @@ def plot_ice(
     -------
     axes: matplotlib axes
     """
-    all_trees = bartrv.owner.op.all_trees
+    #all_trees = bartrv.owner.op.all_trees
+    all_trees = getattr(bartrv.owner.op, "_rust_state", bartrv.owner.op.all_trees)
     rng = np.random.default_rng(random_seed)
 
     if func is None:
@@ -381,7 +405,8 @@ def plot_pdp(
     -------
     axes: matplotlib axes
     """
-    all_trees: list = bartrv.owner.op.all_trees
+    #all_trees: list = bartrv.owner.op.all_trees
+    all_trees = getattr(bartrv.owner.op, "_rust_state", bartrv.owner.op.all_trees)
     rng = np.random.default_rng(random_seed)
 
     if func is None:
@@ -829,7 +854,8 @@ def compute_variable_importance(  # noqa: PLR0915 PLR0912
 
     rng = np.random.default_rng(random_seed)
 
-    all_trees = bartrv.owner.op.all_trees
+    #all_trees = bartrv.owner.op.all_trees
+    all_trees = getattr(bartrv.owner.op, "_rust_state", bartrv.owner.op.all_trees)
 
     if bartrv.ndim == 1:  # type: ignore
         shape = 1

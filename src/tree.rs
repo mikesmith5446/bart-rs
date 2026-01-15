@@ -3,7 +3,8 @@
 //! representation.
 
 use core::fmt;
-use std::cmp::Ordering;
+//use std::cmp::Ordering;
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 /// A `DecisionTree` is an array-based implementation of the binary decision tree.
 #[derive(Debug, Clone, PartialEq)]
@@ -215,6 +216,162 @@ impl DecisionTree {
             }
         }
     }
+
+    /// Predict with excluded-variable weighting (PyMC parity).
+    ///
+    /// If the current node splits on a feature that is excluded, we traverse both branches and
+    /// weight them by n_left/n_right proportions.
+    ///
+    /// `excluded_mask` must have length >= number of features and contain `true` for excluded features.
+    pub fn predict_excluded_mask(&self, sample: &[f64], excluded_mask: &[bool]) -> f64 {
+        let mut acc = 0.0;
+
+        // stack holds (node_index, weight)
+        let mut stack: Vec<(usize, f64)> = Vec::with_capacity(32);
+        stack.push((0usize, 1.0));
+
+        while let Some((node, w)) = stack.pop() {
+            if self.is_leaf(node) {
+                acc += w * self.value[node];
+                continue;
+            }
+
+            let feat = self.feature[node];
+
+            if feat < excluded_mask.len() && excluded_mask[feat] {
+                // excluded => weighted mixture down both branches
+                let n_l = self.n_left[node] as f64;
+                let n_r = self.n_right[node] as f64;
+                let tot = n_l + n_r;
+
+                let (wl, wr) = if tot > 0.0 {
+                    (w * (n_l / tot), w * (n_r / tot))
+                } else {
+                    // fallback if counts aren't set
+                    (0.5 * w, 0.5 * w)
+                };
+
+                let (l, r) = self
+                    .children(node)
+                    .expect("internal node must have two children");
+                stack.push((l, wl));
+                stack.push((r, wr));
+            } else {
+                // normal deterministic traversal (NaN -> right)
+                let thr = self.threshold[node];
+                let xi = sample[feat];
+
+                let next = if xi.is_nan() || xi >= thr {
+                    self.right_child(node).unwrap()
+                } else {
+                    self.left_child(node).unwrap()
+                };
+
+                stack.push((next, w));
+            }
+        }
+
+        acc
+    }
+
+    /// Helper for ArrayView row when it is not contiguous.
+    fn predict_excluded_row_view(&self, row: &ArrayView1<'_, f64>, excluded_mask: &[bool]) -> f64 {
+        let mut acc = 0.0;
+        let mut stack: Vec<(usize, f64)> = Vec::with_capacity(32);
+        stack.push((0usize, 1.0));
+
+        while let Some((node, w)) = stack.pop() {
+            if self.is_leaf(node) {
+                acc += w * self.value[node];
+                continue;
+            }
+
+            let feat = self.feature[node];
+
+            if feat < excluded_mask.len() && excluded_mask[feat] {
+                let n_l = self.n_left[node] as f64;
+                let n_r = self.n_right[node] as f64;
+                let tot = n_l + n_r;
+
+                let (wl, wr) = if tot > 0.0 {
+                    (w * (n_l / tot), w * (n_r / tot))
+                } else {
+                    (0.5 * w, 0.5 * w)
+                };
+
+                let (l, r) = self
+                    .children(node)
+                    .expect("internal node must have two children");
+                stack.push((l, wl));
+                stack.push((r, wr));
+            } else {
+                let thr = self.threshold[node];
+                let xi = row[feat];
+
+                let next = if xi.is_nan() || xi >= thr {
+                    self.right_child(node).unwrap()
+                } else {
+                    self.left_child(node).unwrap()
+                };
+
+                stack.push((next, w));
+            }
+        }
+
+        acc
+    }
+
+    /// Batch prediction with optional excluded mask.
+    ///
+    /// If `excluded_mask` is None, this uses the fast deterministic `predict` path.
+    /// If `excluded_mask` is Some, it uses `predict_excluded_mask`.
+    pub fn predict_batch_excluded_mask(
+        &self,
+        X: &ArrayView2<'_, f64>,
+        excluded_mask: Option<&[bool]>,
+    ) -> Array1<f64> {
+        let mut out = Array1::<f64>::zeros(X.nrows());
+
+        match excluded_mask {
+            None => {
+                for (i, row) in X.outer_iter().enumerate() {
+                    if let Some(slc) = row.as_slice() {
+                        out[i] = self.predict(slc);
+                    } else {
+                        // fallback deterministic traversal
+                        let mut node = 0usize;
+                        loop {
+                            if self.is_leaf(node) {
+                                out[i] = self.value[node];
+                                break;
+                            }
+                            let feat = self.feature[node];
+                            let thr = self.threshold[node];
+                            let xi = row[feat];
+                            node = if xi.is_nan() || xi >= thr {
+                                self.right_child(node).unwrap()
+                            } else {
+                                self.left_child(node).unwrap()
+                            };
+                        }
+                    }
+                }
+            }
+            Some(mask) => {
+                for (i, row) in X.outer_iter().enumerate() {
+                    if let Some(slc) = row.as_slice() {
+                        out[i] = self.predict_excluded_mask(slc, mask);
+                    } else {
+                        out[i] = self.predict_excluded_row_view(&row, mask);
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
+
     #[cfg(debug_assertions)]
     pub fn validate_invariants(&self) {
         for i in 0..self.value.len() {

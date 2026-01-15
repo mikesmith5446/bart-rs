@@ -42,14 +42,22 @@ use std::str::FromStr;
 use ndarray::Array2;
 use numpy::{PyArray1, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
+use ndarray::{ArrayD, Axis, IxDyn};
+use numpy::PyArrayDyn;
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
 
+/// This class is `unsendable`, i.e., it cannot be sent across threads safely.
 /// `StateWrapper` wraps around `PgBartState` to hold state pertaining to
-/// the Particle Gibbs sampler.
+/// the Particle Gibbs sampler and posterior draws.
 ///
 /// This class is `unsendable`, i.e., it cannot be sent across threads safely.
 #[pyclass(unsendable)]
 struct StateWrapper {
     state: PgBartState,
+    // Posterior draws stored in Rust:
+    // draws[draw_index][tree_index]
+    draws: Vec<Vec<DecisionTree>>,
 }
 
 #[pyclass]
@@ -205,7 +213,7 @@ fn initialize(
     );
     let state = PgBartState::new(params, data);
 
-    Ok(StateWrapper { state })
+    Ok(StateWrapper { state, draws: Vec::new() })
 }
 
 #[pyfunction]
@@ -220,8 +228,15 @@ fn step<'py>(
 ) {
     // Update whether or not `pm.sampler` is in tuning phase or not
     wrapper.state.tune = tune;
+
     // Run the Particle Gibbs sampler
     wrapper.state.step();
+
+    // Record posterior draw in Rust only when not tuning
+    if !tune {
+        let draw: Vec<DecisionTree> = wrapper.state.trees().cloned().collect();
+        wrapper.draws.push(draw);
+    }
 
     // Get predictions (sum of trees) and convert to PyArray
     let predictions = wrapper.state.predictions();
@@ -231,16 +246,121 @@ fn step<'py>(
     let variable_inclusion = wrapper.state.variable_inclusion().clone();
     let py_variable_inclusion_array = PyArray1::from_vec_bound(py, variable_inclusion);
 
-    let x_train = wrapper.state.data.X();
-    let tree_dumps = wrapper.state.tree_ensemble_dump(x_train.as_ref());
+    // Stop dumping trees to Python (keep signature stable for now)
+    let tree_dumps: Vec<TreeDump> = Vec::new();
 
     (py_preds_array, py_variable_inclusion_array, tree_dumps)
 }
+
+#[pyfunction]
+#[pyo3(signature = (wrapper, X, size=None, excluded=None, shape=1, seed=None))]
+#[allow(clippy::too_many_arguments)]
+fn sample_posterior<'py>(
+    py: Python<'py>,
+    wrapper: &StateWrapper,
+    X: PyReadonlyArray2<f64>,
+    size: Option<Vec<usize>>,
+    excluded: Option<Vec<usize>>,
+    shape: usize,
+    seed: Option<u64>,
+) -> PyResult<Bound<'py, PyArrayDyn<f64>>> {
+    // We are assuming separate_trees = False AND scalar leaf values.
+    // That only produces correct results when shape == 1.
+    if shape != 1 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Rust sample_posterior currently supports scalar leaf values only (shape must be 1). \
+             For vector-valued outputs, set separate_trees=True or implement vector-valued leaves.",
+        ));
+    }
+
+    let n_draws = wrapper.draws.len();
+    if n_draws == 0 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "No posterior draws stored in Rust yet. Call step(..., tune=False) at least once before sample_posterior().",
+        ));
+    }
+
+    // Resolve size_iter like Python:
+    // - None -> (1,)
+    // - int -> [int]  (we accept Vec so Python wrapper should pass [int])
+    // - tuple -> Vec
+    let size_iter: Vec<usize> = match size {
+        None => vec![1],
+        Some(v) if v.is_empty() => vec![1],
+        Some(v) => v,
+    };
+
+    let flatten_size: usize = size_iter.iter().product();
+
+    // Borrow X as an ndarray view (no copy)
+    let x_view = X.as_array();
+    let n_obs = x_view.nrows();
+    let n_features = x_view.ncols();
+
+    // Build excluded mask once for speed (avoids O(k) scans inside traversal)
+    let excluded_mask: Option<Vec<bool>> = excluded.as_ref().map(|ex| {
+        let mut mask = vec![false; n_features];
+        for &idx in ex {
+            if idx < n_features {
+                mask[idx] = true;
+            }
+        }
+        mask
+    });
+
+    // Output shape matches Python reshape: (*size_iter, n_obs, shape)
+    let mut out_shape: Vec<usize> = Vec::with_capacity(size_iter.len() + 2);
+    out_shape.extend_from_slice(&size_iter);
+    out_shape.push(n_obs);
+    out_shape.push(shape); // == 1
+
+    // Compute in Rust (keep GIL; avoids Ungil/Sync issues because wrapper contains PyData)
+    let seed_val = seed.unwrap_or(0xD1CE_BA5Eu64);
+    let mut rng = StdRng::seed_from_u64(seed_val);
+
+    // Allocate output contiguous buffer
+    let mut out_arr = ArrayD::<f64>::zeros(IxDyn(&out_shape));
+    let out_slice = out_arr
+        .as_slice_mut()
+        .expect("output should be contiguous");
+
+    // Precompute indices into draws
+    let mut draw_idx = Vec::with_capacity(flatten_size);
+    for _ in 0..flatten_size {
+        draw_idx.push(rng.gen_range(0..n_draws));
+    }
+
+    let stride_sample = n_obs * shape; // shape == 1
+
+    for (s, &d) in draw_idx.iter().enumerate() {
+        let base = s * stride_sample;
+
+        for tree in &wrapper.draws[d] {
+            let preds = tree.predict_batch_excluded_mask(
+                &x_view,
+                excluded_mask.as_ref().map(|m| m.as_slice()),
+            );
+
+            for i in 0..n_obs {
+                out_slice[base + i] += preds[i];
+            }
+        }
+    }
+
+    let out = out_arr;
+
+
+
+    // Convert to NumPy array without extra copies
+    Ok(PyArrayDyn::from_owned_array_bound(py, out))
+}
+
 
 #[pymodule]
 fn pymc_bart_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(initialize, m)?)?;
     m.add_function(wrap_pyfunction!(step, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(sample_posterior, m)?)?;
     m.add_class::<TreeDump>()?;
 
     Ok(())

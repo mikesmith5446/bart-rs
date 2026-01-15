@@ -96,6 +96,7 @@ impl SampleIndices {
             data_indices: vec![Vec::from_iter(0..num_samples)],
         }
     }
+   
 
     /// Adds the index of a leaf to be expanded.
     fn add_index(&mut self, idx: usize, data_rows: Vec<usize>) {
@@ -203,7 +204,7 @@ impl Particle {
             return false;
         }
 
-        let samples = &self.indices.data_indices[node_index];
+        let samples = self.indices.samples_in_node(node_index);
         let feature = state.tree_ops.sample_split_feature();
         // Select the split rule assigned for this feature
         let rule = &state.params.split_rules[feature];
@@ -315,6 +316,9 @@ impl Particle {
         let mut predictions = Array1::zeros(X.nrows());
 
         for node_index in self.indices.iter_leaf_nodes() {
+            // leaf_nodes should only contain leaves, but this is a cheap sanity check in debug
+            debug_assert!(self.tree.is_leaf(node_index));
+
             let leaf_value = self.tree.value[node_index];
             for &sample_index in self.indices.samples_in_node(node_index) {
                 predictions[sample_index] = leaf_value;
