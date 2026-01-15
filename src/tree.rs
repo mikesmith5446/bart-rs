@@ -16,6 +16,8 @@ pub struct DecisionTree {
     pub parent: Vec<i32>,
     pub n_left: Vec<i32>,   // optional, if you want excluded weighting
     pub n_right: Vec<i32>,  // optional
+    pub leaf_id: Vec<i32>,   // leaf nodes: >= 0, internal nodes: -1
+    pub next_leaf_id: i32,   // monotonically increasing
 }
 
 /// Represents errors related to binary decision tree operations.
@@ -60,6 +62,8 @@ impl DecisionTree {
             n_left: vec![0],
             n_right: vec![0],
             parent: vec![-1],
+            leaf_id: vec![0],
+            next_leaf_id: 1,
         }
     }
 
@@ -75,6 +79,8 @@ impl DecisionTree {
         self.n_left.push(0);
         self.n_right.push(0);
         self.parent.push(-1);
+        self.leaf_id.push(self.next_leaf_id);
+        self.next_leaf_id += 1;
         node_id
     }
 
@@ -137,6 +143,13 @@ impl DecisionTree {
         let left_child_index = self.add_node(0, 0.0, left_value);
         let right_child_index = self.add_node(0, 0.0, right_value);
 
+        // Debug-only sanity check: newly created nodes must be leaves
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(self.leaf_id[left_child_index] >= 0);
+            debug_assert!(self.leaf_id[right_child_index] >= 0);
+        }
+
         // set explicit pointers
         self.left_child[node_index] = left_child_index as i32;
         self.right_child[node_index] = right_child_index as i32;
@@ -147,23 +160,71 @@ impl DecisionTree {
 
         self.parent[left_child_index] = node_index as i32;
         self.parent[right_child_index] = node_index as i32;
+        self.leaf_id[node_index] = -1;
         
+        
+        #[cfg(debug_assertions)]
+        self.validate_invariants();
         Ok((left_child_index, right_child_index))
+    }
+    #[inline]
+    pub fn is_split(&self, index: usize) -> bool {
+        !self.is_leaf(index)
+    }
+
+    #[inline]
+    pub fn children(&self, index: usize) -> Option<(usize, usize)> {
+        match (self.left_child(index), self.right_child(index)) {
+            (Some(l), Some(r)) => Some((l, r)),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn nvalue(&self, index: usize) -> i32 {
+        self.n_left[index] + self.n_right[index]
+    }
+
+    #[inline]
+    pub fn is_leaf_id(&self, index: usize) -> bool {
+        self.leaf_id[index] >= 0
     }
 
     /// Predict the output given an input `sample`.
+    #[inline]
     pub fn predict(&self, sample: &[f64]) -> f64 {
-        let mut node = 0;
+        let mut node: usize = 0;
+
         loop {
             if self.is_leaf(node) {
                 return self.value[node];
             }
+
             let feature = self.feature[node];
             let threshold = self.threshold[node];
-            node = match sample[feature].partial_cmp(&threshold).unwrap() {
-                Ordering::Less => self.left_child(node).unwrap(),
-                _ => self.right_child(node).unwrap(),
-            };
+
+            // NaN-safe branching (avoids partial_cmp().unwrap() panic)
+            let xi = sample[feature];
+            if xi.is_nan() {
+                // choose a consistent default direction for NaNs
+                node = self.right_child(node).unwrap();
+            } else if xi < threshold {
+                node = self.left_child(node).unwrap();
+            } else {
+                node = self.right_child(node).unwrap();
+            }
+        }
+    }
+    #[cfg(debug_assertions)]
+    pub fn validate_invariants(&self) {
+        for i in 0..self.value.len() {
+            let structural_leaf = self.is_leaf(i);
+            let semantic_leaf = self.leaf_id[i] >= 0;
+            debug_assert_eq!(
+                structural_leaf,
+                semantic_leaf,
+                "leaf mismatch at node {i}"
+            );
         }
     }
 }

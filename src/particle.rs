@@ -41,6 +41,54 @@ impl SampleIndices {
     /// `leaf_nodes` and `expansion_nodes` start from 0 as this is the
     /// index of the root node, i.e when creating a new Particle, only
     /// the root node is eligible to be grown.
+
+    pub fn rebuild_from_tree(&mut self, tree: &DecisionTree, X: &Array2<f64>) {
+        let n = X.nrows();
+        self.leaf_nodes.clear();
+        self.expansion_nodes.clear();
+        self.data_indices.clear();
+        self.data_indices.resize(tree.value.len(), Vec::new());
+
+        // route each observation through the current tree
+        for i in 0..n {
+            let mut node = 0usize;
+            loop {
+                if tree.is_leaf(node) {
+                    break;
+                }
+                let feat = tree.feature[node];
+                let thr = tree.threshold[node];
+                let xi = X[(i, feat)];
+                node = if xi.is_nan() || xi >= thr {
+                    tree.right_child(node).unwrap()
+                } else {
+                    tree.left_child(node).unwrap()
+                };
+            }
+            self.data_indices[node].push(i);
+        }
+
+        // rebuild leaf set + expansion queue from current structure
+        for node in 0..tree.value.len() {
+            if tree.is_leaf(node) {
+                self.leaf_nodes.insert(node);
+                self.expansion_nodes.push_back(node);
+            }
+        }
+    }
+
+
+    pub fn iter_leaf_nodes(&self) -> impl Iterator<Item = usize> + '_ {
+        self.leaf_nodes.iter().copied()
+    }
+
+    pub fn samples_in_node(&self, node: usize) -> &[usize] {
+        self.data_indices
+            .get(node)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
     pub fn new(num_samples: usize) -> Self {
         Self {
             leaf_nodes: HashSet::from([0]),
@@ -266,12 +314,10 @@ impl Particle {
     pub fn predict(&self, X: &Array2<f64>) -> Array1<f64> {
         let mut predictions = Array1::zeros(X.nrows());
 
-        for (node_index, samples) in self.indices.data_indices.iter().enumerate() {
-            if self.tree.is_leaf(node_index) {
-                let leaf_value = self.tree.value[node_index];
-                for &sample_index in samples {
-                    predictions[sample_index] = leaf_value
-                }
+        for node_index in self.indices.iter_leaf_nodes() {
+            let leaf_value = self.tree.value[node_index];
+            for &sample_index in self.indices.samples_in_node(node_index) {
+                predictions[sample_index] = leaf_value;
             }
         }
 
