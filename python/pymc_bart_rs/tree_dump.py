@@ -27,31 +27,59 @@ class TreeDump:
         self.n_left = [int(v) for v in n_left] if n_left is not None else None
         self.n_right = [int(v) for v in n_right] if n_right is not None else None
         self.root_index = int(root_index)
+    
+    @classmethod
+    def from_lists_fast(cls, split_feature, split_value, left_child, right_child, leaf_value,
+                        n_left=None, n_right=None, root_index=0):
+        self = cls.__new__(cls)
+        self.split_feature = split_feature
+        self.split_value = split_value
+        self.left_child = left_child
+        self.right_child = right_child
+        self.leaf_value = leaf_value
+        self.n_left = n_left
+        self.n_right = n_right
+        self.root_index = int(root_index)
+        return self
 
     @classmethod
-    def from_rust(cls, dump: object) -> "TreeDump":
+    def from_rust(cls, dump):
         if isinstance(dump, dict):
-            return cls(
-                split_feature=dump["split_feature"],
-                split_value=dump["split_value"],
-                left_child=dump["left_child"],
-                right_child=dump["right_child"],
-                leaf_value=dump["leaf_value"],
-                n_left=dump.get("n_left"),
-                n_right=dump.get("n_right"),
-                root_index=dump.get("root_index", 0),
+            return cls.from_lists_fast(
+                dump["split_feature"],
+                dump["split_value"],
+                dump["left_child"],
+                dump["right_child"],
+                dump["leaf_value"],
+                dump.get("n_left"),
+                dump.get("n_right"),
+                dump.get("root_index", 0),
             )
+        
+    # @classmethod
+    # def from_rust(cls, dump: object) -> "TreeDump":
+    #     if isinstance(dump, dict):
+    #         return cls(
+    #             split_feature=dump["split_feature"],
+    #             split_value=dump["split_value"],
+    #             left_child=dump["left_child"],
+    #             right_child=dump["right_child"],
+    #             leaf_value=dump["leaf_value"],
+    #             n_left=dump.get("n_left"),
+    #             n_right=dump.get("n_right"),
+    #             root_index=dump.get("root_index", 0),
+    #         )
 
-        return cls(
-            split_feature=getattr(dump, "split_feature"),
-            split_value=getattr(dump, "split_value"),
-            left_child=getattr(dump, "left_child"),
-            right_child=getattr(dump, "right_child"),
-            leaf_value=getattr(dump, "leaf_value"),
-            n_left=getattr(dump, "n_left", None),
-            n_right=getattr(dump, "n_right", None),
-            root_index=getattr(dump, "root_index", 0),
-        )
+    #     return cls(
+    #         split_feature=getattr(dump, "split_feature"),
+    #         split_value=getattr(dump, "split_value"),
+    #         left_child=getattr(dump, "left_child"),
+    #         right_child=getattr(dump, "right_child"),
+    #         leaf_value=getattr(dump, "leaf_value"),
+    #         n_left=getattr(dump, "n_left", None),
+    #         n_right=getattr(dump, "n_right", None),
+    #         root_index=getattr(dump, "root_index", 0),
+    #     )
 
     def predict(
         self,

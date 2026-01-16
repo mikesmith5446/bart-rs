@@ -39,6 +39,18 @@ impl fmt::Display for TreeError {
     }
 }
 
+pub struct TreeDumpParts {
+    pub split_feature: Vec<i32>,
+    pub split_value: Vec<f64>,
+    pub left_child: Vec<i32>,
+    pub right_child: Vec<i32>,
+    pub leaf_value: Vec<f64>,
+    pub n_left: Vec<i32>,
+    pub n_right: Vec<i32>,
+    pub root_index: i32,
+}
+
+
 impl DecisionTree {
     /// Creates a new `DecisionTree` with an initial value set as the root node.
     /// A decision tree is implemented as three parallel vectors.
@@ -370,7 +382,35 @@ impl DecisionTree {
 
         out
     }
+    
+    pub fn to_dump_parts(&self) -> TreeDumpParts {
+        let n = self.value.len();
 
+        let mut split_feature = Vec::<i32>::with_capacity(n);
+        let mut split_value = Vec::<f64>::with_capacity(n);
+
+        for i in 0..n {
+            let is_leaf = self.leaf_id[i] >= 0;
+            if is_leaf {
+                split_feature.push(-1);
+                split_value.push(0.0); // unused for leaves
+            } else {
+                split_feature.push(self.feature[i] as i32);
+                split_value.push(self.threshold[i]);
+            }
+        }
+
+        TreeDumpParts {
+            split_feature,
+            split_value,
+            left_child: self.left_child.clone(),
+            right_child: self.right_child.clone(),
+            leaf_value: self.value.clone(),
+            n_left: self.n_left.clone(),
+            n_right: self.n_right.clone(),
+            root_index: 0,
+        }
+    }
 
     #[cfg(debug_assertions)]
     pub fn validate_invariants(&self) {

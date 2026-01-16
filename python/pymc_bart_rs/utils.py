@@ -13,6 +13,7 @@ from pytensor.tensor.variable import Variable
 from scipy.interpolate import griddata
 from scipy.signal import savgol_filter
 from scipy.stats import norm
+from pymc_bart_rs.tree_dump import TreeDump
 try:
     #from pymc_bart_rs import pymc_bart_rs as rs
     import pymc_bart_rs.pymc_bart_rs as rs
@@ -1180,6 +1181,14 @@ def plot_scatter_submodels(
             ls=plot_kwargs.get("ls_ref", "--"),
         )
 
+def materialize_all_trees_from_rust(bart_op):
+    state = getattr(bart_op, "_rust_state", None)
+    if state is None:
+        return None
+
+    raw = state.export_all_trees()  # list[list[dict]]
+    all_trees = [[TreeDump.from_rust(d) for d in draw] for draw in raw]
+    return all_trees
 
 def generate_sequences(n_vars, i_var, include):
     """Generate combinations of variables"""

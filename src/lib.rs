@@ -46,8 +46,8 @@ use ndarray::{ArrayD, Axis, IxDyn};
 use numpy::PyArrayDyn;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use pyo3::types::{PyDict, PyList};
 
-/// This class is `unsendable`, i.e., it cannot be sent across threads safely.
 /// `StateWrapper` wraps around `PgBartState` to hold state pertaining to
 /// the Particle Gibbs sampler and posterior draws.
 ///
@@ -59,6 +59,39 @@ struct StateWrapper {
     // draws[draw_index][tree_index]
     draws: Vec<Vec<DecisionTree>>,
 }
+
+#[pymethods]
+impl StateWrapper {
+    fn export_all_trees<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let out = PyList::empty_bound(py); // draws
+
+        for draw in &self.draws {
+            let py_ensemble = PyList::empty_bound(py); // trees
+
+            for tree in draw {
+                let dump = tree.to_dump_parts();
+
+                let d = PyDict::new_bound(py);
+                d.set_item("split_feature", dump.split_feature)?;
+                d.set_item("split_value", dump.split_value)?;
+                d.set_item("left_child", dump.left_child)?;
+                d.set_item("right_child", dump.right_child)?;
+                d.set_item("leaf_value", dump.leaf_value)?;
+                d.set_item("n_left", dump.n_left)?;
+                d.set_item("n_right", dump.n_right)?;
+                d.set_item("root_index", dump.root_index)?;
+
+                py_ensemble.append(d)?;
+            }
+
+            out.append(py_ensemble)?;
+        }
+
+        Ok(out)
+    }
+}
+
+
 
 #[pyclass]
 #[derive(Clone)]
