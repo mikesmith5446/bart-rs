@@ -24,30 +24,62 @@ except Exception:  # pragma: no cover
 TensorLike = Union[npt.NDArray[np.float64], pt.TensorVariable]
 
 def _resolve_all_trees_handle(bart_op):
-    """Resolve the tree handle, loading Rust bytes into the state when needed."""
-    state = getattr(bart_op, "_rust_state", None)
-    if state is None:
-        cached = getattr(bart_op, "_python_all_trees", None)
-        if cached is not None:
-            return cached
-        materialized = _materialize_all_trees_from_bytes(bart_op.all_trees)
-        bart_op._python_all_trees = materialized
-        return materialized
+    """Resolve the tree handle.
 
-    if getattr(bart_op, "_rust_draws_loaded", False):
-        return state
-
+    If we have serialized Rust draws in bart_op.all_trees but no Rust state attached
+    (common after multiprocessing sampling), automatically create a predictor in the
+    main process and load the draws into Rust.
+    """
     all_trees = bart_op.all_trees
-    if len(all_trees) == 0:
+
+    # Fast empty guard (works for ListProxy too)
+    try:
+        n = len(all_trees)
+    except Exception:
+        n = 0
+    if n == 0:
+        state = getattr(bart_op, "_rust_state", None)
+        if state is not None:
+            return state
+        cached = getattr(bart_op, "_python_all_trees", None)
+        return cached if cached is not None else all_trees
+
+    # Peek at first element to detect representation
+    first = all_trees[0]
+
+    state = getattr(bart_op, "_rust_state", None)
+
+    # --- NEW: auto-attach predictor if bytes exist but state is missing ---
+    if state is None and rs is not None and isinstance(first, (bytes, bytearray, memoryview)):
+        state = rs.make_predictor()
+        state.load_all_trees_from_bytes(list(all_trees))
+        bart_op._rust_state = state
+        bart_op._rust_draws_loaded = True
+        # Optional: drop any cached python materialization to save RAM
+        bart_op._python_all_trees = None
         return state
 
-    first = all_trees[0]
-    if isinstance(first, (bytes, bytearray, memoryview)):
-        # Ownership: Python holds bytes from worker processes, Rust owns decoded trees.
-        state.load_all_trees_from_bytes(list(all_trees))
-        bart_op._rust_draws_loaded = True
+    # Existing: if we have state and already loaded, return it
+    if state is not None:
+        if getattr(bart_op, "_rust_draws_loaded", False):
+            return state
 
-    return state
+        # Load bytes into Rust once
+        if isinstance(first, (bytes, bytearray, memoryview)):
+            state.load_all_trees_from_bytes(list(all_trees))
+            bart_op._rust_draws_loaded = True
+
+        return state
+
+    # Python fallback: materialize and cache
+    cached = getattr(bart_op, "_python_all_trees", None)
+    if cached is not None:
+        return cached
+
+    materialized = _materialize_all_trees_from_bytes(all_trees)
+    bart_op._python_all_trees = materialized
+    return materialized
+
 
 def _materialize_all_trees_from_bytes(all_trees):
     """Decode Rust-exported draw bytes into Python TreeDump objects.
