@@ -4,7 +4,7 @@
 
 use core::fmt;
 //use std::cmp::Ordering;
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
+use ndarray::{Array1, ArrayView1, ArrayView2};
 
 /// A `DecisionTree` is an array-based implementation of the binary decision tree.
 #[derive(Debug, Clone, PartialEq)]

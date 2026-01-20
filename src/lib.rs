@@ -39,10 +39,9 @@ use crate::tree::{DecisionTree, deserialize_forest, serialize_forest};
 
 use std::str::FromStr;
 
-use ndarray::Array2;
 use numpy::{PyArray1, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
-use ndarray::{ArrayD, Axis, IxDyn};
+use ndarray::{ArrayD, IxDyn};
 use numpy::PyArrayDyn;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
@@ -143,87 +142,6 @@ struct TreeDump {
     n_right: Vec<i32>,
     #[pyo3(get)]
     root_index: i32,
-}
-
-impl TreeDump {
-    fn from_tree(tree: &DecisionTree, x_train: &Array2<f64>) -> Self {
-        let node_count = tree.feature.len();
-        let mut split_feature = Vec::with_capacity(node_count);
-        let mut split_value = Vec::with_capacity(node_count);
-        let mut left_child = Vec::with_capacity(node_count);
-        let mut right_child = Vec::with_capacity(node_count);
-        let mut leaf_value = Vec::with_capacity(node_count);
-        let mut n_left = vec![0; node_count];
-        let mut n_right = vec![0; node_count];
-
-        for idx in 0..node_count {
-            let is_leaf = tree.is_leaf(idx);
-            split_feature.push(if is_leaf {
-                -1
-            } else {
-                tree.feature[idx] as i32
-            });
-            split_value.push(if is_leaf { 0.0 } else { tree.threshold[idx] });
-            left_child.push(
-                tree.left_child(idx)
-                    .map(|value| value as i32)
-                    .unwrap_or(-1),
-            );
-            right_child.push(
-                tree.right_child(idx)
-                    .map(|value| value as i32)
-                    .unwrap_or(-1),
-            );
-            leaf_value.push(tree.value[idx]);
-        }
-
-        for sample in x_train.outer_iter() {
-            let mut node = 0;
-            loop {
-                if tree.is_leaf(node) {
-                    break;
-                }
-
-                let feature = tree.feature[node];
-                let threshold = tree.threshold[node];
-                if sample[feature] < threshold {
-                    n_left[node] += 1;
-                    if let Some(next_node) = tree.left_child(node) {
-                        node = next_node;
-                    } else {
-                        break;
-                    }
-                } else {
-                    n_right[node] += 1;
-                    if let Some(next_node) = tree.right_child(node) {
-                        node = next_node;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-
-        Self {
-            split_feature,
-            split_value,
-            left_child,
-            right_child,
-            leaf_value,
-            n_left,
-            n_right,
-            root_index: 0,
-        }
-    }
-}
-
-impl PgBartState {
-    /// Snapshot of the current tree ensemble only (excludes transient proposal particles).
-    fn tree_ensemble_dump(&self, x_train: &Array2<f64>) -> Vec<TreeDump> {
-        self.trees()
-            .map(|tree| TreeDump::from_tree(tree, x_train))
-            .collect()
-    }
 }
 
 
