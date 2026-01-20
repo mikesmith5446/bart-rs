@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import pytensor.tensor as pt
+import struct
 from numba import jit
 from pytensor.tensor.variable import Variable
 from scipy.interpolate import griddata
@@ -91,7 +92,7 @@ def _sample_posterior(
             raise RuntimeError(f"Rust sample_posterior failed: {e}") from e
 
     # --- LEGACY PYTHON PATH (unchanged) ---
-    stacked_trees = all_trees
+    stacked_trees = _materialize_all_trees_from_bytes(all_trees)
 
     if size is None:
         size_iter: Union[list, tuple] = (1,)
