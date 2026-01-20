@@ -30,8 +30,7 @@ def _resolve_all_trees_handle(bart_op):
         cached = getattr(bart_op, "_python_all_trees", None)
         if cached is not None:
             return cached
-        materialize = globals().get("_materialize_all_trees_from_bytes")
-        materialized = materialize(bart_op.all_trees) if materialize else bart_op.all_trees
+        materialized = _materialize_all_trees_from_bytes(bart_op.all_trees)
         bart_op._python_all_trees = materialized
         return materialized
 
@@ -181,8 +180,7 @@ def _sample_posterior(
             raise RuntimeError(f"Rust sample_posterior failed: {e}") from e
 
     # --- LEGACY PYTHON PATH (unchanged) ---
-    materialize = globals().get("_materialize_all_trees_from_bytes")
-    stacked_trees = materialize(all_trees) if materialize else all_trees
+    stacked_trees = _materialize_all_trees_from_bytes(all_trees)
 
     if size is None:
         size_iter: Union[list, tuple] = (1,)
