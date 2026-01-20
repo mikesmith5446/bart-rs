@@ -27,7 +27,12 @@ def _resolve_all_trees_handle(bart_op):
     """Resolve the tree handle, loading Rust bytes into the state when needed."""
     state = getattr(bart_op, "_rust_state", None)
     if state is None:
-        return bart_op.all_trees
+        cached = getattr(bart_op, "_python_all_trees", None)
+        if cached is not None:
+            return cached
+        materialized = _materialize_all_trees_from_bytes(bart_op.all_trees)
+        bart_op._python_all_trees = materialized
+        return materialized
 
     if getattr(bart_op, "_rust_draws_loaded", False):
         return state
