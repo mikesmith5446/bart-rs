@@ -252,6 +252,9 @@ impl PgBartState {
     }
 
     /// Returns an iterator over the current ensemble of trees.
+    ///
+    /// The PyO3 wrapper snapshots these trees for posterior draws, which can be
+    /// serialized into a compact byte format for IPC with Python.
     pub fn trees(&self) -> impl Iterator<Item = &DecisionTree> {
         self.particles.iter().map(|particle| &particle.tree)
     }

@@ -22,6 +22,27 @@ except Exception:  # pragma: no cover
 
 TensorLike = Union[npt.NDArray[np.float64], pt.TensorVariable]
 
+def _resolve_all_trees_handle(bart_op):
+    """Resolve the tree handle, loading Rust bytes into the state when needed."""
+    state = getattr(bart_op, "_rust_state", None)
+    if state is None:
+        return bart_op.all_trees
+
+    if getattr(bart_op, "_rust_draws_loaded", False):
+        return state
+
+    all_trees = bart_op.all_trees
+    if len(all_trees) == 0:
+        return state
+
+    first = all_trees[0]
+    if isinstance(first, (bytes, bytearray, memoryview)):
+        # Ownership: Python holds bytes from worker processes, Rust owns decoded trees.
+        state.load_all_trees_from_bytes(list(all_trees))
+        bart_op._rust_draws_loaded = True
+
+    return state
+
 def _sample_posterior(
     all_trees,
     X: TensorLike,
@@ -41,10 +62,9 @@ def _sample_posterior(
         X = X.eval()
 
     # --- NEW FAST PATH: Rust handle ---
-    # We detect the Rust handle by presence of attribute `.state` or `.draws` is tricky,
-    # but simplest is: if pymc_bart_rs is available and `all_trees` is not a list,
-    # try calling the Rust function and fall back if it errors.
-    if rs is not None and not isinstance(all_trees, list):
+    # We detect the Rust handle by checking for Rust-exported methods and fall back
+    # to the Python path otherwise.
+    if rs is not None and hasattr(all_trees, "export_all_trees"):
         # Convert `size` to Rust-friendly Option[List[int]]
         if size is None:
             size_arg = None
@@ -261,7 +281,7 @@ def plot_ice(
     axes: matplotlib axes
     """
     #all_trees = bartrv.owner.op.all_trees
-    all_trees = getattr(bartrv.owner.op, "_rust_state", bartrv.owner.op.all_trees)
+    all_trees = _resolve_all_trees_handle(bartrv.owner.op)
     rng = np.random.default_rng(random_seed)
 
     if func is None:
@@ -413,7 +433,7 @@ def plot_pdp(
     axes: matplotlib axes
     """
     #all_trees: list = bartrv.owner.op.all_trees
-    all_trees = getattr(bartrv.owner.op, "_rust_state", bartrv.owner.op.all_trees)
+    all_trees = _resolve_all_trees_handle(bartrv.owner.op)
     rng = np.random.default_rng(random_seed)
 
     if func is None:
@@ -862,7 +882,7 @@ def compute_variable_importance(  # noqa: PLR0915 PLR0912
     rng = np.random.default_rng(random_seed)
 
     #all_trees = bartrv.owner.op.all_trees
-    all_trees = getattr(bartrv.owner.op, "_rust_state", bartrv.owner.op.all_trees)
+    all_trees = _resolve_all_trees_handle(bartrv.owner.op)
 
     if bartrv.ndim == 1:  # type: ignore
         shape = 1
@@ -1184,6 +1204,10 @@ def plot_scatter_submodels(
 def materialize_all_trees_from_rust(bart_op):
     state = getattr(bart_op, "_rust_state", None)
     if state is None:
+        return None
+
+    state = _resolve_all_trees_handle(bart_op)
+    if not hasattr(state, "export_all_trees"):
         return None
 
     raw = state.export_all_trees()  # list[list[dict]]

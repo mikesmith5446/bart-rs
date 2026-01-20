@@ -145,6 +145,7 @@ class PGBART(ArrayStepShared):
         )
 
         self.tune = True
+        self.draw_idx = 0
         super().__init__(vars, self.compiled_pymc_model.shared)
 
     def astep(self, _):
@@ -159,6 +160,10 @@ class PGBART(ArrayStepShared):
             # Keep posterior draws and sampling in Rust.
             # Store the Rust handle so utils._sample_posterior can call into Rust.
             self.bart._rust_state = self.state
+            self.bart._rust_draws_loaded = True
+            draw_bytes = self.state.export_draw_as_bytes(self.draw_idx)
+            self.draw_idx += 1
+            self.bart.all_trees.append(draw_bytes)
         
         t1 = perf_counter()
 
