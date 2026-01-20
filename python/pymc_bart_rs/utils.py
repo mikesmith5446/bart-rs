@@ -49,35 +49,21 @@ def _resolve_all_trees_handle(bart_op):
 
     return state
 
-def _resolve_all_trees_handle(bart_op):
-    """Resolve the tree handle, loading Rust bytes into the state when needed."""
-    state = getattr(bart_op, "_rust_state", None)
-    if state is None:
-        cached = getattr(bart_op, "_python_all_trees", None)
-        if cached is not None:
-            return cached
-        materialized = _materialize_all_trees_from_bytes(bart_op.all_trees)
-        bart_op._python_all_trees = materialized
-        return materialized
-
-    if getattr(bart_op, "_rust_draws_loaded", False):
-        return state
-
-    all_trees = bart_op.all_trees
-    if len(all_trees) == 0:
-        return state
-
-    first = all_trees[0]
-    if isinstance(first, (bytes, bytearray, memoryview)):
-        # Ownership: Python holds bytes from worker processes, Rust owns decoded trees.
-        state.load_all_trees_from_bytes(list(all_trees))
-        bart_op._rust_draws_loaded = True
-
-    return state
-
 def _materialize_all_trees_from_bytes(all_trees):
-    """Decode Rust-exported draw bytes into Python TreeDump objects."""
-    if not all_trees:
+    """Decode Rust-exported draw bytes into Python TreeDump objects.
+
+    Expected input:
+      - legacy: list[draw][odim][tree]   (already materialized), OR
+      - bytes:  sequence[draw] of bytes blobs, where each blob encodes a full forest.
+
+    Returns legacy structure: list[draw][odim][tree]
+    """
+    # Robust empty check (works for ListProxy too)
+    try:
+        n = len(all_trees)
+    except Exception:
+        return all_trees
+    if n == 0:
         return all_trees
 
     first = all_trees[0]
@@ -86,7 +72,19 @@ def _materialize_all_trees_from_bytes(all_trees):
 
     decoded = []
     for draw_bytes in all_trees:
-        decoded.append([_decode_draw_bytes(draw_bytes)])
+        forest = _decode_draw_bytes(draw_bytes)
+
+        # Normalize forest shape
+        if isinstance(forest, TreeDump):
+            forest = [forest]
+        elif not isinstance(forest, list):
+            raise TypeError(
+                f"_decode_draw_bytes must return TreeDump or list[TreeDump], got {type(forest)}"
+            )
+
+        # Wrap as [odim] to match legacy format: [ [trees] ]
+        decoded.append([forest])
+
     return decoded
 
 def _decode_draw_bytes(draw_bytes):
@@ -180,7 +178,7 @@ def _sample_posterior(
     # --- NEW FAST PATH: Rust handle ---
     # We detect the Rust handle by checking for Rust-exported methods and fall back
     # to the Python path otherwise.
-    if rs is not None and hasattr(all_trees, "export_all_trees"):
+    if rs is not None and not isinstance(all_trees, list):
         # Convert `size` to Rust-friendly Option[List[int]]
         if size is None:
             size_arg = None
@@ -207,6 +205,16 @@ def _sample_posterior(
             raise RuntimeError(f"Rust sample_posterior failed: {e}") from e
 
     # --- LEGACY PYTHON PATH (unchanged) ---
+    # If we have serialized bytes but no Rust handle, fail loudly with instructions.
+    if isinstance(all_trees, (list,)) and len(all_trees) and isinstance(all_trees[0], (bytes, bytearray, memoryview)):
+        raise RuntimeError(
+            "all_trees contains serialized byte blobs, but no Rust state handle was provided. "
+            "In multiprocess sampling you must attach a predictor in the main process, e.g.\n\n"
+            "  op = mu.owner.op\n"
+            "  op._rust_state = rs.make_predictor()\n"
+            "  op._rust_state.load_all_trees_from_bytes(list(op.all_trees))\n"
+            "  op._rust_draws_loaded = True\n"
+        )
     stacked_trees = _materialize_all_trees_from_bytes(all_trees)
 
     if size is None:

@@ -157,14 +157,12 @@ class PGBART(ArrayStepShared):
         sum_trees, variable_inclusion, _ = step(self.state, self.tune)
         #print("after step; tune =", self.tune, "has _rust_state?", hasattr(self.bart, "_rust_state"))
         if not self.tune:
-            # Keep posterior draws and sampling in Rust.
-            # Store the Rust handle so utils._sample_posterior can call into Rust.
-            self.bart._rust_state = self.state
-            self.bart._rust_draws_loaded = True
             draw_bytes = self.state.export_draw_as_bytes(self.draw_idx)
+            if self.draw_idx == 0:
+                print("export_draw_as_bytes type:", type(draw_bytes))
             self.draw_idx += 1
             self.bart.all_trees.append(draw_bytes)
-        
+                
         t1 = perf_counter()
 
         stats = {

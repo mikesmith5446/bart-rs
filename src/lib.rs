@@ -47,6 +47,7 @@ use numpy::PyArrayDyn;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use pyo3::types::{PyDict, PyList};
+use pyo3::types::PyBytes;
 
 /// `StateWrapper` wraps around `PgBartState` to hold state pertaining to
 /// the Particle Gibbs sampler and posterior draws.
@@ -54,9 +55,8 @@ use pyo3::types::{PyDict, PyList};
 /// This class is `unsendable`, i.e., it cannot be sent across threads safely.
 #[pyclass(unsendable)]
 struct StateWrapper {
-    state: PgBartState,
+    state: Option<PgBartState>,
     // Posterior draws stored in Rust:
-    // draws[draw_index][tree_index]
     draws: Vec<Vec<DecisionTree>>,
 }
 
@@ -91,7 +91,7 @@ impl StateWrapper {
     }
 
     /// Export a single draw (full forest) as a compact byte blob for IPC.
-    fn export_draw_as_bytes(&self, draw_idx: usize) -> PyResult<Vec<u8>> {
+    fn export_draw_as_bytes<'py>(&self, py: Python<'py>, draw_idx: usize) -> PyResult<Bound<'py, PyBytes>> {
         let draw = self.draws.get(draw_idx).ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyIndexError, _>(format!(
                 "Draw index {draw_idx} out of bounds (n_draws={}).",
@@ -99,7 +99,8 @@ impl StateWrapper {
             ))
         })?;
 
-        Ok(serialize_forest(draw))
+        let bytes = serialize_forest(draw);
+        Ok(PyBytes::new_bound(py, &bytes))
     }
 
     /// Load all draws from byte blobs produced by `export_draw_as_bytes`.
@@ -276,7 +277,15 @@ fn initialize(
     );
     let state = PgBartState::new(params, data);
 
-    Ok(StateWrapper { state, draws: Vec::new() })
+    Ok(StateWrapper { state: Some(state), draws: Vec::new() })
+}
+
+#[pyfunction]
+fn make_predictor() -> PyResult<StateWrapper> {
+    Ok(StateWrapper {
+        state: None,
+        draws: Vec::new(),
+    })
 }
 
 #[pyfunction]
@@ -289,29 +298,35 @@ fn step<'py>(
     Bound<'py, PyArray1<i32>>,
     Vec<TreeDump>,
 ) {
-    // Update whether or not `pm.sampler` is in tuning phase or not
-    wrapper.state.tune = tune;
+    // Get mutable access to the sampler state
+    let state = wrapper.state.as_mut().ok_or_else(|| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+            "This StateWrapper has no sampler state (prediction-only). \
+             Use initialize(...) to create a sampler state."
+        )
+    }).unwrap(); // if you prefer, propagate instead of unwrap
 
-    // Run the Particle Gibbs sampler
-    wrapper.state.step();
+    // Update tune flag
+    state.tune = tune;
+
+    // Run sampler
+    state.step();
 
     // Record posterior draw in Rust only when not tuning
     if !tune {
-        let draw: Vec<DecisionTree> = wrapper.state.trees().cloned().collect();
+        let draw: Vec<DecisionTree> = state.trees().cloned().collect();
         wrapper.draws.push(draw);
     }
 
-    // Get predictions (sum of trees) and convert to PyArray
-    let predictions = wrapper.state.predictions();
+    // Predictions
+    let predictions = state.predictions();
     let py_preds_array = PyArray1::from_array_bound(py, &predictions.view());
 
-    // Get variable inclusion counter and convert to PyArray
-    let variable_inclusion = wrapper.state.variable_inclusion().clone();
+    // Variable inclusion
+    let variable_inclusion = state.variable_inclusion().clone();
     let py_variable_inclusion_array = PyArray1::from_vec_bound(py, variable_inclusion);
 
-    // Stop dumping trees to Python (keep signature stable for now)
     let tree_dumps: Vec<TreeDump> = Vec::new();
-
     (py_preds_array, py_variable_inclusion_array, tree_dumps)
 }
 
@@ -424,6 +439,7 @@ fn pymc_bart_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(initialize, m)?)?;
     m.add_function(wrap_pyfunction!(step, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(sample_posterior, m)?)?;
+    m.add_function(wrap_pyfunction!(make_predictor, m)?)?;
     m.add_class::<TreeDump>()?;
 
     Ok(())

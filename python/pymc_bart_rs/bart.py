@@ -172,6 +172,8 @@ class BART(Distribution):
             {
                 "name": "BART",
                 "all_trees": cls.all_trees,
+                "_rust_state": None,
+                "_rust_draws_loaded": False,
                 "inplace": False,
                 "initval": Y.mean(),
                 "X": X,
@@ -185,6 +187,7 @@ class BART(Distribution):
                 "separate_trees": separate_trees,
             },
         )()
+
 
         Distribution.register(BARTRV)
 
