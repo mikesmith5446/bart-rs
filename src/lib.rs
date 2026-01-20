@@ -35,7 +35,7 @@ use crate::data::ExternalData;
 use crate::ops::Response;
 use crate::pgbart::{PgBartSettings, PgBartState};
 use crate::split_rules::{ContinuousSplit, OneHotSplit, SplitRuleType};
-use crate::tree::DecisionTree;
+use crate::tree::{DecisionTree, deserialize_forest, serialize_forest};
 
 use std::str::FromStr;
 
@@ -88,6 +88,36 @@ impl StateWrapper {
         }
 
         Ok(out)
+    }
+
+    /// Export a single draw (full forest) as a compact byte blob for IPC.
+    fn export_draw_as_bytes(&self, draw_idx: usize) -> PyResult<Vec<u8>> {
+        let draw = self.draws.get(draw_idx).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyIndexError, _>(format!(
+                "Draw index {draw_idx} out of bounds (n_draws={}).",
+                self.draws.len()
+            ))
+        })?;
+
+        Ok(serialize_forest(draw))
+    }
+
+    /// Load all draws from byte blobs produced by `export_draw_as_bytes`.
+    /// Python owns the bytes; Rust owns the decoded trees after this call.
+    fn load_all_trees_from_bytes(&mut self, draws: Vec<Vec<u8>>) -> PyResult<()> {
+        let mut decoded = Vec::with_capacity(draws.len());
+
+        for (idx, bytes) in draws.into_iter().enumerate() {
+            let forest = deserialize_forest(&bytes).map_err(|err| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "Failed to decode draw {idx}: {err}"
+                ))
+            })?;
+            decoded.push(forest);
+        }
+
+        self.draws = decoded;
+        Ok(())
     }
 }
 

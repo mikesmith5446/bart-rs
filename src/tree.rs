@@ -425,3 +425,157 @@ impl DecisionTree {
         }
     }
 }
+
+/// Serialize an entire forest (draw) into a compact binary format.
+///
+/// Binary layout (little-endian):
+/// - u32: number of trees
+/// - for each tree:
+///   - u32: node count
+///   - u32[node_count]: feature
+///   - f64[node_count]: threshold
+///   - f64[node_count]: value
+///   - i32[node_count]: left_child
+///   - i32[node_count]: right_child
+///   - i32[node_count]: parent
+///   - i32[node_count]: n_left
+///   - i32[node_count]: n_right
+///   - i32[node_count]: leaf_id
+///   - i32: next_leaf_id
+pub fn serialize_forest(trees: &[DecisionTree]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    write_u32(&mut buf, trees.len() as u32);
+    for tree in trees {
+        tree.serialize_into(&mut buf);
+    }
+    buf
+}
+
+/// Deserialize a forest (draw) from the compact binary format.
+pub fn deserialize_forest(bytes: &[u8]) -> Result<Vec<DecisionTree>, String> {
+    let mut offset = 0usize;
+    let tree_count = read_u32(bytes, &mut offset)? as usize;
+    let mut trees = Vec::with_capacity(tree_count);
+
+    for _ in 0..tree_count {
+        trees.push(DecisionTree::deserialize_from(bytes, &mut offset)?);
+    }
+
+    if offset != bytes.len() {
+        return Err("Trailing bytes after decoding forest.".to_string());
+    }
+
+    Ok(trees)
+}
+
+impl DecisionTree {
+    fn serialize_into(&self, buf: &mut Vec<u8>) {
+        let node_count = self.value.len();
+        write_u32(buf, node_count as u32);
+
+        for &feat in &self.feature {
+            write_u32(buf, feat as u32);
+        }
+        for &thr in &self.threshold {
+            write_f64(buf, thr);
+        }
+        for &val in &self.value {
+            write_f64(buf, val);
+        }
+        write_i32_slice(buf, &self.left_child);
+        write_i32_slice(buf, &self.right_child);
+        write_i32_slice(buf, &self.parent);
+        write_i32_slice(buf, &self.n_left);
+        write_i32_slice(buf, &self.n_right);
+        write_i32_slice(buf, &self.leaf_id);
+        write_i32(buf, self.next_leaf_id);
+    }
+
+    fn deserialize_from(bytes: &[u8], offset: &mut usize) -> Result<Self, String> {
+        let node_count = read_u32(bytes, offset)? as usize;
+
+        let mut feature = Vec::with_capacity(node_count);
+        for _ in 0..node_count {
+            feature.push(read_u32(bytes, offset)? as usize);
+        }
+
+        let mut threshold = Vec::with_capacity(node_count);
+        for _ in 0..node_count {
+            threshold.push(read_f64(bytes, offset)?);
+        }
+
+        let mut value = Vec::with_capacity(node_count);
+        for _ in 0..node_count {
+            value.push(read_f64(bytes, offset)?);
+        }
+
+        let left_child = read_i32_vec(bytes, offset, node_count)?;
+        let right_child = read_i32_vec(bytes, offset, node_count)?;
+        let parent = read_i32_vec(bytes, offset, node_count)?;
+        let n_left = read_i32_vec(bytes, offset, node_count)?;
+        let n_right = read_i32_vec(bytes, offset, node_count)?;
+        let leaf_id = read_i32_vec(bytes, offset, node_count)?;
+        let next_leaf_id = read_i32(bytes, offset)?;
+
+        Ok(DecisionTree {
+            feature,
+            threshold,
+            value,
+            left_child,
+            right_child,
+            parent,
+            n_left,
+            n_right,
+            leaf_id,
+            next_leaf_id,
+        })
+    }
+}
+
+fn write_u32(buf: &mut Vec<u8>, value: u32) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_i32(buf: &mut Vec<u8>, value: i32) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_f64(buf: &mut Vec<u8>, value: f64) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_i32_slice(buf: &mut Vec<u8>, values: &[i32]) {
+    for &value in values {
+        write_i32(buf, value);
+    }
+}
+
+fn read_exact<const N: usize>(bytes: &[u8], offset: &mut usize) -> Result<[u8; N], String> {
+    if *offset + N > bytes.len() {
+        return Err("Unexpected end of buffer while decoding.".to_string());
+    }
+    let mut out = [0u8; N];
+    out.copy_from_slice(&bytes[*offset..*offset + N]);
+    *offset += N;
+    Ok(out)
+}
+
+fn read_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, String> {
+    Ok(u32::from_le_bytes(read_exact::<4>(bytes, offset)?))
+}
+
+fn read_i32(bytes: &[u8], offset: &mut usize) -> Result<i32, String> {
+    Ok(i32::from_le_bytes(read_exact::<4>(bytes, offset)?))
+}
+
+fn read_f64(bytes: &[u8], offset: &mut usize) -> Result<f64, String> {
+    Ok(f64::from_le_bytes(read_exact::<8>(bytes, offset)?))
+}
+
+fn read_i32_vec(bytes: &[u8], offset: &mut usize, len: usize) -> Result<Vec<i32>, String> {
+    let mut values = Vec::with_capacity(len);
+    for _ in 0..len {
+        values.push(read_i32(bytes, offset)?);
+    }
+    Ok(values)
+}

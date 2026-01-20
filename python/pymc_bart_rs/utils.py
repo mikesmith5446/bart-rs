@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import pytensor.tensor as pt
+import struct
 from numba import jit
 from pytensor.tensor.variable import Variable
 from scipy.interpolate import griddata
@@ -21,6 +22,116 @@ except Exception:  # pragma: no cover
     rs = None
 
 TensorLike = Union[npt.NDArray[np.float64], pt.TensorVariable]
+
+def _resolve_all_trees_handle(bart_op):
+    """Resolve the tree handle, loading Rust bytes into the state when needed."""
+    state = getattr(bart_op, "_rust_state", None)
+    if state is None:
+        cached = getattr(bart_op, "_python_all_trees", None)
+        if cached is not None:
+            return cached
+        materialize = globals().get("_materialize_all_trees_from_bytes")
+        materialized = materialize(bart_op.all_trees) if materialize else bart_op.all_trees
+        bart_op._python_all_trees = materialized
+        return materialized
+
+    if getattr(bart_op, "_rust_draws_loaded", False):
+        return state
+
+    all_trees = bart_op.all_trees
+    if len(all_trees) == 0:
+        return state
+
+    first = all_trees[0]
+    if isinstance(first, (bytes, bytearray, memoryview)):
+        # Ownership: Python holds bytes from worker processes, Rust owns decoded trees.
+        state.load_all_trees_from_bytes(list(all_trees))
+        bart_op._rust_draws_loaded = True
+
+    return state
+
+def _materialize_all_trees_from_bytes(all_trees):
+    """Decode Rust-exported draw bytes into Python TreeDump objects."""
+    if not all_trees:
+        return all_trees
+
+    first = all_trees[0]
+    if not isinstance(first, (bytes, bytearray, memoryview)):
+        return all_trees
+
+    decoded = []
+    for draw_bytes in all_trees:
+        decoded.append([_decode_draw_bytes(draw_bytes)])
+    return decoded
+
+def _decode_draw_bytes(draw_bytes):
+    """Decode a single draw (forest) byte blob into TreeDump objects."""
+    buf = memoryview(draw_bytes)
+    offset = 0
+
+    def read_u32():
+        nonlocal offset
+        if offset + 4 > len(buf):
+            raise ValueError("Unexpected end of buffer while decoding draw.")
+        value = struct.unpack_from("<I", buf, offset)[0]
+        offset += 4
+        return value
+
+    def read_i32():
+        nonlocal offset
+        if offset + 4 > len(buf):
+            raise ValueError("Unexpected end of buffer while decoding draw.")
+        value = struct.unpack_from("<i", buf, offset)[0]
+        offset += 4
+        return value
+
+    def read_array(dtype, count):
+        nonlocal offset
+        itemsize = np.dtype(dtype).itemsize
+        nbytes = itemsize * count
+        if offset + nbytes > len(buf):
+            raise ValueError("Unexpected end of buffer while decoding draw.")
+        arr = np.frombuffer(buf[offset:offset + nbytes], dtype=dtype)
+        offset += nbytes
+        return arr
+
+    tree_count = read_u32()
+    trees = []
+    for _ in range(tree_count):
+        node_count = read_u32()
+        feature = read_array("<u4", node_count).astype(np.int64, copy=False)
+        threshold = read_array("<f8", node_count)
+        value = read_array("<f8", node_count)
+        left_child = read_array("<i4", node_count)
+        right_child = read_array("<i4", node_count)
+        _parent = read_array("<i4", node_count)
+        n_left = read_array("<i4", node_count)
+        n_right = read_array("<i4", node_count)
+        leaf_id = read_array("<i4", node_count)
+        _next_leaf_id = read_i32()
+
+        is_leaf = leaf_id >= 0
+        split_feature = np.where(is_leaf, -1, feature)
+        split_value = threshold.copy()
+        split_value[is_leaf] = 0.0
+
+        trees.append(
+            TreeDump.from_lists_fast(
+                split_feature.tolist(),
+                split_value.tolist(),
+                left_child.tolist(),
+                right_child.tolist(),
+                value.tolist(),
+                n_left.tolist(),
+                n_right.tolist(),
+                0,
+            )
+        )
+
+    if offset != len(buf):
+        raise ValueError("Trailing bytes after decoding draw.")
+
+    return trees
 
 def _sample_posterior(
     all_trees,
@@ -41,10 +152,9 @@ def _sample_posterior(
         X = X.eval()
 
     # --- NEW FAST PATH: Rust handle ---
-    # We detect the Rust handle by presence of attribute `.state` or `.draws` is tricky,
-    # but simplest is: if pymc_bart_rs is available and `all_trees` is not a list,
-    # try calling the Rust function and fall back if it errors.
-    if rs is not None and not isinstance(all_trees, list):
+    # We detect the Rust handle by checking for Rust-exported methods and fall back
+    # to the Python path otherwise.
+    if rs is not None and hasattr(all_trees, "export_all_trees"):
         # Convert `size` to Rust-friendly Option[List[int]]
         if size is None:
             size_arg = None
@@ -71,7 +181,8 @@ def _sample_posterior(
             raise RuntimeError(f"Rust sample_posterior failed: {e}") from e
 
     # --- LEGACY PYTHON PATH (unchanged) ---
-    stacked_trees = all_trees
+    materialize = globals().get("_materialize_all_trees_from_bytes")
+    stacked_trees = materialize(all_trees) if materialize else all_trees
 
     if size is None:
         size_iter: Union[list, tuple] = (1,)
@@ -261,7 +372,7 @@ def plot_ice(
     axes: matplotlib axes
     """
     #all_trees = bartrv.owner.op.all_trees
-    all_trees = getattr(bartrv.owner.op, "_rust_state", bartrv.owner.op.all_trees)
+    all_trees = _resolve_all_trees_handle(bartrv.owner.op)
     rng = np.random.default_rng(random_seed)
 
     if func is None:
@@ -413,7 +524,7 @@ def plot_pdp(
     axes: matplotlib axes
     """
     #all_trees: list = bartrv.owner.op.all_trees
-    all_trees = getattr(bartrv.owner.op, "_rust_state", bartrv.owner.op.all_trees)
+    all_trees = _resolve_all_trees_handle(bartrv.owner.op)
     rng = np.random.default_rng(random_seed)
 
     if func is None:
@@ -862,7 +973,7 @@ def compute_variable_importance(  # noqa: PLR0915 PLR0912
     rng = np.random.default_rng(random_seed)
 
     #all_trees = bartrv.owner.op.all_trees
-    all_trees = getattr(bartrv.owner.op, "_rust_state", bartrv.owner.op.all_trees)
+    all_trees = _resolve_all_trees_handle(bartrv.owner.op)
 
     if bartrv.ndim == 1:  # type: ignore
         shape = 1
@@ -1184,6 +1295,10 @@ def plot_scatter_submodels(
 def materialize_all_trees_from_rust(bart_op):
     state = getattr(bart_op, "_rust_state", None)
     if state is None:
+        return None
+
+    state = _resolve_all_trees_handle(bart_op)
+    if not hasattr(state, "export_all_trees"):
         return None
 
     raw = state.export_all_trees()  # list[list[dict]]

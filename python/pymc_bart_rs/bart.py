@@ -27,7 +27,7 @@ from pymc.logprob.abstract import _logprob
 from pytensor.tensor.random.op import RandomVariable
 from pytensor.tensor.sharedvar import TensorSharedVariable
 
-from .utils import _sample_posterior
+from .utils import _resolve_all_trees_handle, _sample_posterior
 
 __all__ = ["BART"]
 
@@ -67,8 +67,9 @@ class BARTRV(RandomVariable):
                 shape = size[0]
             else:
                 shape = 1
+            all_trees = _resolve_all_trees_handle(cls)
             return _sample_posterior(
-                cls.all_trees, cls.X, rng=rng, shape=shape
+                all_trees, cls.X, rng=rng, shape=shape
             ).squeeze().T
 
 
