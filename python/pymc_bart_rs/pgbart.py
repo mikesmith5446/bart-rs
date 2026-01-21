@@ -79,6 +79,21 @@ class PGBART(ArrayStepShared):
         value_bart = vars[0]
         self.bart = model.values_to_rvs[value_bart].owner.op
 
+        # Auto-reset shared draw storage at the start of every pm.sample() run.
+        # This runs in the main process before multiprocessing workers start.
+        if hasattr(self.bart, "_reset_posterior_cache"):
+            self.bart._reset_posterior_cache()
+        else:
+            # Fallback: best-effort clear
+            try:
+                while len(self.bart.all_trees):
+                    self.bart.all_trees.pop()
+            except Exception:
+                pass
+            self.bart._python_all_trees = None
+            self.bart._rust_draws_loaded = False
+            self.bart._rust_state = None
+
         if isinstance(self.bart.X, Variable):
             self.X = self.bart.X.eval()
         else:
@@ -182,8 +197,8 @@ class PGBART(ArrayStepShared):
 
         if not self.tune:
             draw_bytes = self.state.export_draw_as_bytes(self.draw_idx)
-            if self.draw_idx == 0:
-                print("export_draw_as_bytes type:", type(draw_bytes))
+            #if self.draw_idx == 0:
+            #    print("export_draw_as_bytes type:", type(draw_bytes))
             self.draw_idx += 1
             self.bart.all_trees.append(draw_bytes)
 

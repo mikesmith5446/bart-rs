@@ -32,6 +32,55 @@ from .utils import _resolve_all_trees_handle, _sample_posterior
 __all__ = ["BART"]
 
 
+def _clear_proxy_list_inplace(proxy):
+    """Clear a list-like object in place.
+
+    Supports: list, multiprocessing.managers.ListProxy.
+    """
+    # Fast path if supported
+    try:
+        proxy.clear()
+        return
+    except Exception:
+        pass
+
+    # Slice delete if supported
+    try:
+        del proxy[:]
+        return
+    except Exception:
+        pass
+
+    # Fallback: pop until empty (ListProxy supports pop + len)
+    while True:
+        try:
+            if len(proxy) == 0:
+                return
+            proxy.pop()
+        except Exception as e:
+            raise TypeError(
+                f"Could not clear all_trees in-place (type={type(proxy)}): {e}"
+            ) from e
+
+
+def _reset_posterior_cache(self):
+    """Reset posterior draw storage and derived caches.
+
+    This is intended to mimic typical Python overwrite behavior in notebooks:
+    re-running `pm.sample(...)` should not append to draws from an earlier run.
+    """
+    all_trees = getattr(self, "all_trees", None)
+    if all_trees is not None:
+        _clear_proxy_list_inplace(all_trees)
+
+    # Clear cached decoded trees (utils cache)
+    self._python_all_trees = None
+
+    # Reset Rust state flags/handles
+    self._rust_draws_loaded = False
+    self._rust_state = None
+
+
 class BARTRV(RandomVariable):
     """Base class for BART."""
 
@@ -174,6 +223,8 @@ class BART(Distribution):
                 "all_trees": cls.all_trees,
                 "_rust_state": None,
                 "_rust_draws_loaded": False,
+                "_python_all_trees": None,
+                "_reset_posterior_cache": _reset_posterior_cache,
                 "inplace": False,
                 "initval": Y.mean(),
                 "X": X,
