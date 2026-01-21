@@ -17,7 +17,7 @@
 
 use std::str::FromStr;
 
-use rand::{self, thread_rng, Rng};
+use rand::Rng;
 use rand::distributions::WeightedIndex;
 use rand_distr::{Distribution, Normal};
 
@@ -105,20 +105,18 @@ impl TreeSamplingOps {
     /// The deeper a leaf node, the greater the prior probability it will
     /// remain a leaf node. The probability a node being a leaf node is
     /// given by `(1 - (p(being a split node))`.
-    pub fn sample_expand_flag(&self, depth: usize) -> bool {
+    pub fn sample_expand_flag<R: Rng + ?Sized>(&self, rng: &mut R, depth: usize) -> bool {
         if depth == 0 {
             return true;
         }
-
-        let mut rng = rand::thread_rng();
         let leaf_node_probs = 1. - (self.alpha * ((1. + (depth - 1) as f64).powf(-self.beta)));
-
         leaf_node_probs < rng.gen::<f64>()
     }
 
     /// Sample a Gaussian distributed value for a leaf node.
-    pub fn sample_leaf_value(
+    pub fn sample_leaf_value<R: Rng + ?Sized>(
         &self,
+        rng: &mut R,
         mu: &[f64],
         _obs: &[f64],
         m: usize,
@@ -126,13 +124,11 @@ impl TreeSamplingOps {
         _shape: &usize,
         response: &Response,
     ) -> f64 {
-        let mut rng = thread_rng();
-
         if leaf_sd.len() > 1 {
             todo!("Multiple `leaf_sd` not supported.")
         }
 
-        let norm = self.normal.sample(&mut rng) * leaf_sd[0];
+        let norm = self.normal.sample(rng) * leaf_sd[0];
 
         match mu.len() {
             0 => 0.0,
@@ -140,11 +136,10 @@ impl TreeSamplingOps {
             _ => response.compute_leaf_value(mu, m, norm),
         }
     }
-
     /// Sample the index of a feature to split on.
     ///
     /// Sampling of splitting variables is proportional to `alpha_vec`.
-    pub fn sample_split_feature(&self) -> usize {
+    pub fn sample_split_feature<R: Rng + ?Sized>(&self, rng: &mut R) -> usize {
         if self.splitting_probs.is_empty() {
             return 0;
         }
@@ -155,9 +150,8 @@ impl TreeSamplingOps {
             .map(|w| if w.is_finite() && *w > 0.0 { *w } else { 0.0 })
             .collect();
 
-        let mut rng = thread_rng();
         match WeightedIndex::new(weights) {
-            Ok(dist) => dist.sample(&mut rng),
+            Ok(dist) => dist.sample(rng),
             Err(_) => rng.gen_range(0..self.splitting_probs.len()),
         }
     }

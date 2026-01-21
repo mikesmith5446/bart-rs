@@ -12,7 +12,11 @@ pub trait SplitRule {
     type Value;
 
     /// Samples a split value from the candidate points.
-    fn sample_split_value(&self, candidates: &[Self::Value]) -> Option<Self::Value>;
+    fn sample_split_value<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        candidates: &[Self::Value],
+    ) -> Option<Self::Value>;
     /// Divides the candidates left and right according to the split value.
     fn divide(
         &self,
@@ -28,7 +32,7 @@ pub struct ContinuousSplit;
 impl SplitRule for ContinuousSplit {
     type Value = f64;
 
-    fn sample_split_value(&self, candidates: &[f64]) -> Option<f64> {
+    fn sample_split_value<R: Rng + ?Sized>(&self, rng: &mut R, candidates: &[f64]) -> Option<f64> {
         let mut iter = candidates.iter().copied().filter(|v| v.is_finite());
         let first = iter.next()?;
         let (min_val, max_val) = iter.fold((first, first), |(min_v, max_v), val| {
@@ -39,7 +43,7 @@ impl SplitRule for ContinuousSplit {
             return None;
         }
 
-        Some(rand::thread_rng().gen_range(min_val..max_val))
+        Some(rng.gen_range(min_val..max_val))
     }
 
     fn divide(&self, candidates: &[f64], split_value: &f64) -> (Vec<usize>, Vec<usize>) {
@@ -55,7 +59,7 @@ pub struct OneHotSplit;
 impl SplitRule for OneHotSplit {
     type Value = i32;
 
-    fn sample_split_value(&self, candidates: &[i32]) -> Option<i32> {
+    fn sample_split_value<R: Rng + ?Sized>(&self, rng: &mut R, candidates: &[i32]) -> Option<i32> {
         let mut iter = candidates.iter().copied();
         let first = match iter.next() {
             Some(v) => v,
@@ -72,7 +76,8 @@ impl SplitRule for OneHotSplit {
             return None;
         }
 
-        Some(unique_vals[rand::thread_rng().gen_range(0..unique_vals.len())])
+        let idx = rng.gen_range(0..unique_vals.len());
+        Some(unique_vals[idx])
     }
 
     fn divide(&self, candidates: &[i32], split_value: &i32) -> (Vec<usize>, Vec<usize>) {

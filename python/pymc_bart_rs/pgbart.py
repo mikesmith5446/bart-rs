@@ -91,6 +91,8 @@ class PGBART(ArrayStepShared):
 
         self.m = self.bart.m
         self.response = self.bart.response
+        self.num_particles = num_particles
+        self.batch = batch
 
         shape = initial_point[value_bart.name].shape
         self.shape = 1 if len(shape) == 1 else shape[0]
@@ -127,7 +129,24 @@ class PGBART(ArrayStepShared):
         # passed to Rust and called using Rust's foreign function interface (FFI)
         self.compiled_pymc_model = CompiledPyMCModel(model, vars)
 
-        # Initialize the Rust Particle-Gibbs sampler state
+        # Rust sampler state is created lazily in set_rng so seeds propagate from PyMC
+        self.state = None
+        self._rust_seed = None
+
+        self.tune = True
+        self.draw_idx = 0
+        super().__init__(vars, self.compiled_pymc_model.shared)
+
+        # Reset draw index for this chain
+        self.draw_idx = 0
+    
+    def set_rng(self, rng):
+        """PyMC provides a per-chain Generator so we can derive deterministic seeds."""
+        super().set_rng(rng)
+
+        seed = int(rng.integers(0, np.iinfo(np.uint64).max, dtype=np.uint64))
+        self._rust_seed = seed
+
         self.state = initialize(
             X=self.X,
             y=self.bart.Y,
@@ -138,31 +157,36 @@ class PGBART(ArrayStepShared):
             split_rules=self.split_rules,
             response=self.bart.response,
             n_trees=self.bart.m,
-            n_particles=num_particles,
+            n_particles=self.num_particles,
             leaf_sd=self.leaf_sd,
-            batch=batch,
+            batch=self.batch,
             leaves_shape=self.leaves_shape,
+            seed=seed,
         )
-
-        self.tune = True
         self.draw_idx = 0
-        super().__init__(vars, self.compiled_pymc_model.shared)
 
     def astep(self, _):
+        if self.state is None:
+            raise RuntimeError(
+                "Rust sampler state is not initialized. PyMC should call set_rng() "
+                "before sampling; if you hit this, something is wrong with step initialization."
+            )
+
         #print("PGBART.astep tune =", self.tune)
         # Record time to quantify performance improvements
         t0 = perf_counter()
         self.compiled_pymc_model.update_shared_arrays()
-        
+
         sum_trees, variable_inclusion, _ = step(self.state, self.tune)
         #print("after step; tune =", self.tune, "has _rust_state?", hasattr(self.bart, "_rust_state"))
+
         if not self.tune:
             draw_bytes = self.state.export_draw_as_bytes(self.draw_idx)
             if self.draw_idx == 0:
                 print("export_draw_as_bytes type:", type(draw_bytes))
             self.draw_idx += 1
             self.bart.all_trees.append(draw_bytes)
-                
+
         t1 = perf_counter()
 
         stats = {

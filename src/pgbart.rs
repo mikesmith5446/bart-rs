@@ -6,6 +6,7 @@
 #![allow(non_snake_case)]
 
 use core::f64;
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use ndarray::{Array1, Array2};
@@ -105,13 +106,13 @@ pub struct PgBartState {
     pub lower: usize,
     /// Current iteration of tree growing (includes tuning and draws).
     pub iter: usize,
-    pub rng: StdRng,
+    pub rng: RefCell<StdRng>,
 }
 
 impl PgBartState {
     /// Creates a `PgBartState` with the given `PgBartSettings` and `PyData`.
     
-    pub fn new(params: PgBartSettings, data: Box<dyn PyData>) -> Self {
+    pub fn new(params: PgBartSettings, data: Box<dyn PyData>, seed: u64) -> Self {
         let X = data.X();
         let y = data.y();
 
@@ -148,7 +149,7 @@ impl PgBartState {
             tuning_stats: RunningStd::new(X.nrows()),
             lower: 0,
             iter: 0,
-            rng: StdRng::seed_from_u64(42),
+            rng: RefCell::new(StdRng::seed_from_u64(seed)),
         }
     }
 
@@ -214,13 +215,19 @@ impl PgBartState {
 
                 // Normalize log-likelihood and resample particles
                 let normalized_weights = normalize_weights(&local_particles[1..]);
-                local_particles =
-                    resample_particles(&mut self.rng, &mut local_particles, &normalized_weights);
+                {
+                    let mut rng = self.rng.borrow_mut();
+                    local_particles =
+                        resample_particles(&mut *rng, &mut local_particles, &normalized_weights);
+                }
             }
 
             // Normalize weights again and select a particle to replace the current tree
             let normalized_weights = normalize_weights(&local_particles);
-            let new_particle = select_particle(&mut self.rng, &mut local_particles, &normalized_weights);
+            let new_particle = {
+                let mut rng = self.rng.borrow_mut();
+                select_particle(&mut *rng, &mut local_particles, &normalized_weights)
+            };
 
             // Update the sum of trees with the new particle's predictions
             let new_particle_preds = &new_particle.predict(&X);

@@ -146,6 +146,22 @@ struct TreeDump {
 
 
 #[pyfunction]
+#[pyo3(signature = (
+    X,
+    y,
+    logp,
+    alpha,
+    beta,
+    split_prior,
+    split_rules,
+    response,
+    n_trees,
+    n_particles,
+    leaf_sd,
+    batch,
+    leaves_shape,
+    seed=None,
+))]
 #[allow(clippy::too_many_arguments)]
 fn initialize(
     X: PyReadonlyArray2<f64>,
@@ -161,6 +177,7 @@ fn initialize(
     leaf_sd: Vec<f64>,
     batch: (f64, f64),
     leaves_shape: usize,
+    seed: Option<u64>,
 ) -> PyResult<StateWrapper> {
     // Heap allocation because size of 'ExternalData' is not known at compile time
     let data = Box::new(ExternalData::new(X, y, logp));
@@ -193,7 +210,8 @@ fn initialize(
         rules,
         leaves_shape,
     );
-    let state = PgBartState::new(params, data);
+    let rng_seed = seed.unwrap_or_else(|| StdRng::from_entropy().gen());
+    let state = PgBartState::new(params, data, rng_seed);
 
     Ok(StateWrapper { state: Some(state), draws: Vec::new() })
 }

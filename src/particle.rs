@@ -200,12 +200,14 @@ impl Particle {
 
         let node_index_depth = self.tree.node_depth(node_index);
 
-        if !state.tree_ops.sample_expand_flag(node_index_depth) {
+        let mut rng = state.rng.borrow_mut();
+
+        if !state.tree_ops.sample_expand_flag(&mut *rng, node_index_depth) {
             return false;
         }
 
         let samples = self.indices.samples_in_node(node_index);
-        let feature = state.tree_ops.sample_split_feature();
+        let feature = state.tree_ops.sample_split_feature(&mut *rng);
         // Select the split rule assigned for this feature
         let rule = &state.params.split_rules[feature];
 
@@ -213,7 +215,7 @@ impl Particle {
             SplitRuleType::Continuous(continuous_rule) => {
                 let feature_values: Vec<f64> = samples.iter().map(|&i| X[[i, feature]]).collect();
 
-                let split_val = match continuous_rule.sample_split_value(&feature_values) {
+                let split_val = match continuous_rule.sample_split_value(&mut *rng, &feature_values) {
                     Some(value) => value,
                     None => return false,
                 };
@@ -238,7 +240,7 @@ impl Particle {
             SplitRuleType::OneHot(one_hot_rule) => {
                 let feature_values: Vec<i32> = samples.iter().map(|&i| X[[i, feature]] as i32).collect();
 
-                let split_val = match one_hot_rule.sample_split_value(&feature_values) {
+                let split_val = match one_hot_rule.sample_split_value(&mut *rng, &feature_values) {
                     Some(value) => value,
                     None => return false,
                 };
@@ -270,6 +272,7 @@ impl Particle {
             let obs_y: Vec<f64> = left_samples.iter().map(|&i| y[i]).collect();
 
             state.tree_ops.sample_leaf_value(
+                &mut *rng,
                 &preds_other,
                 &obs_y,
                 state.params.n_trees,
@@ -284,6 +287,7 @@ impl Particle {
             let obs_y: Vec<f64> = right_samples.iter().map(|&i| y[i]).collect();
 
             state.tree_ops.sample_leaf_value(
+                &mut *rng,
                 &preds_other,
                 &obs_y,
                 state.params.n_trees,
